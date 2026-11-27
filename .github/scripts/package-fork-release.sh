@@ -41,8 +41,9 @@ for apk in build-apks/*.apk; do
     --out "$output" "$work/aligned.apk"
   "$tools/zipalign" -c -P 16 4 "$output"
   certs="$("$tools/apksigner" verify --print-certs "$output" |
-    sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p')"
-  [[ "${certs,,}" == "$signer" ]] || fail "Signing certificate mismatch for $abi"
+    sed -nE 's/^(V[0-9]+([.][0-9]+)? )?Signer( #[0-9]+)?:? certificate SHA-256 digest: ([0-9a-fA-F]{64})$/\4/p' |
+    tr '[:upper:]' '[:lower:]' | sort -u)"
+  [[ "$certs" == "$signer" ]] || fail "Signing certificate mismatch for $abi"
   echo "Verified $abi APK and pinned signer $signer."
 done
 for abi in arm64-v8a armeabi-v7a x86 x86_64 universal; do
