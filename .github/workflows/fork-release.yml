@@ -1,0 +1,196 @@
+name: Build Fork APKs
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: true
+      release_commit:
+        type: string
+        required: true
+      upstream_commit:
+        type: string
+        required: true
+      version_code:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'doubyoungle/AsteriskBOX'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      build_tools_version: ${{ steps.build_tools.outputs.version }}
+    steps:
+      - name: Checkout release baseline or validation ref
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_commit || github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Confirm tagged source and versionCode
+        if: inputs.release_tag != ''
+        env:
+          TAG: ${{ inputs.release_tag }}
+          CODE: ${{ inputs.version_code }}
+          UPSTREAM_COMMIT: ${{ inputs.upstream_commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$(git rev-parse HEAD)" ||
+            { echo "::error::Release tag does not match the planned commit."; exit 1; }
+          test "$(git rev-parse HEAD^1)" = "$UPSTREAM_COMMIT" ||
+            { echo "::error::Build commit is missing the planned upstream baseline."; exit 1; }
+          test "$(git rev-list --count HEAD)" = "$CODE" ||
+            { echo "::error::Planned versionCode differs from the build commit count."; exit 1; }
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "26"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Set up Android command-line tools
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: false
+          packages: ""
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          android_sdk=(android --no-metrics --sdk="$ANDROID_HOME" sdk)
+
+          build_tools_version="$(sed -n 's/^[[:space:]]*const val BUILD_TOOLS_VERSION = "\([^"]\+\)".*/\1/p' buildSrc/src/main/kotlin/BuildConfig.kt | head -n 1)"
+          target_sdk="$(sed -n 's/^[[:space:]]*const val TARGET_SDK = \([0-9]\+\).*/\1/p' buildSrc/src/main/kotlin/BuildConfig.kt | head -n 1)"
+          if [ -z "$target_sdk" ]; then
+            echo "::error::Unable to read ProjectConfig.TARGET_SDK from buildSrc/src/main/kotlin/BuildConfig.kt."
+            exit 1
+          fi
+
+          target_sdk_minor="$(sed -n 's/^[[:space:]]*const val TARGET_SDK_MINOR = \([0-9]\+\).*/\1/p' buildSrc/src/main/kotlin/BuildConfig.kt | head -n 1)"
+          if [ -z "$target_sdk_minor" ]; then
+            echo "::error::Unable to read ProjectConfig.TARGET_SDK_MINOR from buildSrc/src/main/kotlin/BuildConfig.kt."
+            exit 1
+          fi
+
+          ndk_version="$(sed -n 's/^[[:space:]]*const val NDK_VERSION = "\([^"]\+\)".*/\1/p' buildSrc/src/main/kotlin/BuildConfig.kt | head -n 1)"
+          if [ -z "$ndk_version" ]; then
+            echo "::error::Unable to read ProjectConfig.NDK_VERSION from buildSrc/src/main/kotlin/BuildConfig.kt."
+            exit 1
+          fi
+
+          available_packages="$("${android_sdk[@]}" list --all | awk '{ print $1 }')"
+          platform_package="platforms/android-${target_sdk}"
+          if ! grep -Fxq "$platform_package" <<< "$available_packages"; then
+            if grep -Fxq "platforms/android-${target_sdk}.0" <<< "$available_packages"; then
+              platform_package="platforms/android-${target_sdk}.0"
+            else
+              echo "::error::No Android SDK platform package is available for TARGET_SDK=$target_sdk."
+              exit 1
+            fi
+          fi
+
+          build_tools_package="build-tools/$build_tools_version"
+          ndk_package="ndk/$ndk_version"
+
+          if ! grep -Fxq "$build_tools_package" <<< "$available_packages"; then
+            echo "::error::Android build-tools package $build_tools_package requested by ProjectConfig.BUILD_TOOLS_VERSION is not available from Android CLI."
+            exit 1
+          fi
+          if ! grep -Fxq "$ndk_package" <<< "$available_packages"; then
+            echo "::error::Android NDK package $ndk_package requested by ProjectConfig.NDK_VERSION is not available from Android CLI."
+            exit 1
+          fi
+
+          "${android_sdk[@]}" install platform-tools "$platform_package" "platforms/android-${target_sdk}.${target_sdk_minor}" "$build_tools_package" "$ndk_package"
+
+          echo "ANDROID_BUILD_TOOLS_VERSION=$build_tools_version" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ndk_version" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$ndk_version" >> "$GITHUB_ENV"
+
+      - name: Export Android build tools version
+        id: build_tools
+        run: echo "version=$ANDROID_BUILD_TOOLS_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect the upstream APK signing certificate
+        if: inputs.release_tag == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v1.2.0 --repo Asterisk4Magisk/AsteriskBOX \
+            --pattern '*-arm64-v8a.apk' --output "$RUNNER_TEMP/upstream.apk"
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION/apksigner" \
+            verify --print-certs "$RUNNER_TEMP/upstream.apk"
+
+      - name: Build, test and lint
+        run: ./gradlew --no-daemon :app:assembleRelease :app:testDebugUnitTest :app:lintDebug
+
+      - name: Upload unsigned APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-fork-apks
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+  publish:
+    if: inputs.release_tag != ''
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      RELEASE_VERSION_CODE: ${{ inputs.version_code }}
+      UPSTREAM_COMMIT: ${{ inputs.upstream_commit }}
+      BUILD_TOOLS_VERSION: ${{ needs.build.outputs.build_tools_version }}
+      DISTRIBUTED_VERSION_CODE_FLOOR: ${{ vars.DISTRIBUTED_VERSION_CODE_FLOOR }}
+      RELEASE_SIGNER_SHA256: ${{ vars.RELEASE_SIGNER_SHA256 }}
+    steps:
+      - name: Checkout the fork workflow scripts
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: unsigned-fork-apks
+          path: build-apks
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '26'
+      - uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: false
+          packages: ''
+      - name: Install Android build tools
+        run: android --no-metrics --sdk="$ANDROID_HOME" sdk install "build-tools/$BUILD_TOOLS_VERSION"
+
+      - name: Sign and verify APKs and generate manifest
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: bash .github/scripts/package-fork-release.sh
+
+      - name: Upload complete draft and publish as Latest
+        run: bash .github/scripts/publish-fork-release.sh
