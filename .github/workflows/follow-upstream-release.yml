@@ -1,0 +1,74 @@
+name: Follow Upstream Release
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      check_only:
+        description: Validate release selection and versionCode without tagging or publishing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asteriskbox-fork-release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'doubyoungle/AsteriskBOX' && github.ref == 'refs/heads/main' && inputs.check_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check baseline, skipped releases and versionCode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_ONLY: 'true'
+          UPSTREAM_START_TAG: ${{ vars.UPSTREAM_START_TAG }}
+          DISTRIBUTED_VERSION_CODE_FLOOR: ${{ vars.DISTRIBUTED_VERSION_CODE_FLOOR }}
+        run: python3 .github/scripts/follow-upstream-release.py
+
+  prepare:
+    if: >-
+      github.repository == 'doubyoungle/AsteriskBOX' && github.ref == 'refs/heads/main' &&
+      !inputs.check_only && vars.AUTO_FORK_RELEASE_ENABLED == 'true'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_tag: ${{ steps.prepare.outputs.release_tag }}
+      release_commit: ${{ steps.prepare.outputs.release_commit }}
+      version_code: ${{ steps.prepare.outputs.version_code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Prepare a release from the upstream tag
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_ONLY: 'false'
+          UPSTREAM_START_TAG: ${{ vars.UPSTREAM_START_TAG }}
+          DISTRIBUTED_VERSION_CODE_FLOOR: ${{ vars.DISTRIBUTED_VERSION_CODE_FLOOR }}
+          SIGNING_READY: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' && secrets.RELEASE_KEYSTORE_PASSWORD != '' && secrets.RELEASE_KEY_ALIAS != '' && vars.RELEASE_SIGNER_SHA256 != '' }}
+        run: python3 .github/scripts/follow-upstream-release.py
+
+  release:
+    needs: prepare
+    if: needs.prepare.outputs.release_tag != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/fork-release.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      release_commit: ${{ needs.prepare.outputs.release_commit }}
+      version_code: ${{ needs.prepare.outputs.version_code }}
+    secrets: inherit

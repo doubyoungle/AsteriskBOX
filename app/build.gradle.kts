@@ -18,6 +18,10 @@ val isBuildingAppBundle = gradle.startParameter.taskNames.any { requestedTask ->
     requestedTask.substringAfterLast(':').startsWith("bundle", ignoreCase = true)
 }
 
+val forkReleaseRevision = providers.gradleProperty("asteriskBoxForkRevision").orNull
+val appVersionName = forkReleaseRevision?.let { "${ProjectConfig.VERSION_NAME}-r.$it" }
+    ?: ProjectConfig.VERSION_NAME
+
 android {
     namespace = "app"
     buildToolsVersion = ProjectConfig.BUILD_TOOLS_VERSION
@@ -39,7 +43,7 @@ android {
         minSdk = ProjectConfig.MIN_SDK
         targetSdk = ProjectConfig.TARGET_SDK
         versionCode = getGitVersionCode()
-        versionName = ProjectConfig.VERSION_NAME
+        versionName = appVersionName
     }
 
     androidResources {
@@ -122,6 +126,7 @@ tasks.named("preBuild") {
 }
 
 dependencies {
+    testImplementation(libs.junit)
     implementation(libs.compose.ui)
     implementation(libs.haze)
     implementation(libs.haze.blur)
@@ -169,7 +174,7 @@ val generateProjectInfo = tasks.register<GenerateProjectInfoTask>("generateProje
     description = "Generate ProjectInfo object for the app"
     packageName.set("app")
     projectName.set(ProjectConfig.PROJECT_NAME)
-    versionName.set(ProjectConfig.VERSION_NAME)
+    versionName.set(appVersionName)
     versionCode.set(getGitVersionCode())
     androidLibBoxLiteVersion.set(ProjectConfig.ANDROID_LIB_BOX_LITE_VERSION)
     hevSocks5TunnelVersion.set(ProjectConfig.HEV_SOCKS5_TUNNEL_VERSION)
