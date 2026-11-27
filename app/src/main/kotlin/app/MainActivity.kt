@@ -35,6 +35,7 @@ import features.importing.ImportStage
 import features.importing.reportImportFailure
 import features.boot.BootAutoConnect
 import features.subscription.parseSubscriptionDeepLink
+import features.updater.AppUpdater
 import features.subscription.usecase.OutboundSubscriptionUpdateResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -176,6 +177,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         overlayPermissionPending = savedInstanceState?.getBoolean(OverlayPermissionPendingKey) == true
         super.onCreate(savedInstanceState)
+        lifecycleScope.launch { AppUpdater.check(applicationContext) }
         observeRecentTasksVisibility()
         observeScreenshotProtection()
         observeLauncherIconVisibility()
