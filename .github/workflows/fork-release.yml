@@ -10,6 +10,9 @@ on:
       release_commit:
         type: string
         required: true
+      upstream_commit:
+        type: string
+        required: true
       version_code:
         type: string
         required: true
@@ -38,10 +41,13 @@ jobs:
         env:
           TAG: ${{ inputs.release_tag }}
           CODE: ${{ inputs.version_code }}
+          UPSTREAM_COMMIT: ${{ inputs.upstream_commit }}
         run: |
           set -euo pipefail
           test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$(git rev-parse HEAD)" ||
             { echo "::error::Release tag does not match the planned commit."; exit 1; }
+          test "$(git rev-parse HEAD^1)" = "$UPSTREAM_COMMIT" ||
+            { echo "::error::Build commit is missing the planned upstream baseline."; exit 1; }
           test "$(git rev-list --count HEAD)" = "$CODE" ||
             { echo "::error::Planned versionCode differs from the build commit count."; exit 1; }
 
@@ -154,6 +160,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.release_tag }}
       RELEASE_COMMIT: ${{ inputs.release_commit }}
       RELEASE_VERSION_CODE: ${{ inputs.version_code }}
+      UPSTREAM_COMMIT: ${{ inputs.upstream_commit }}
       BUILD_TOOLS_VERSION: ${{ needs.build.outputs.build_tools_version }}
       DISTRIBUTED_VERSION_CODE_FLOOR: ${{ vars.DISTRIBUTED_VERSION_CODE_FLOOR }}
       RELEASE_SIGNER_SHA256: ${{ vars.RELEASE_SIGNER_SHA256 }}

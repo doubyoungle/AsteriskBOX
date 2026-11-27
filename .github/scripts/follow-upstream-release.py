@@ -12,6 +12,7 @@ from pathlib import Path
 UPSTREAM = "Asterisk4Magisk/AsteriskBOX"
 INITIAL_TAG = "v1.2.0"
 INITIAL_VERSION_CODE = 651
+FORK_POINT = "2a748b20b823ebfd14c6dca3df6afb2d1db1343e"
 PROJECT_CONFIG = "buildSrc/src/main/kotlin/BuildConfig.kt"
 STABLE = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 FORK = rf"({STABLE})-r\.[1-9][0-9]*"
@@ -76,6 +77,15 @@ def eligible(release, start, inclusive):
     return version(release["tag_name"]) > version(start["tag_name"])
 
 
+def official_tag_commit(upstream_tag):
+    git_ref = json.loads(run("gh", "api", f"repos/{UPSTREAM}/git/ref/tags/{upstream_tag}"))["object"]
+    while git_ref["type"] == "tag":
+        git_ref = json.loads(run("gh", "api", f"repos/{UPSTREAM}/git/tags/{git_ref['sha']}"))["object"]
+    if git_ref["type"] != "commit":
+        raise ValueError(f"Upstream tag {upstream_tag} does not resolve to a commit")
+    return git_ref["sha"]
+
+
 def release_candidate(upstream_release, fork_releases):
     upstream_tag = upstream_release["tag_name"]
     fork_tag = f"{upstream_tag}-r.1"
@@ -84,10 +94,7 @@ def release_candidate(upstream_release, fork_releases):
         "+refs/heads/main:refs/remotes/upstream/main",
         f"+refs/tags/{upstream_tag}:refs/upstream-release/{upstream_tag}")
     upstream_commit = run("git", "rev-parse", "--verify", f"refs/upstream-release/{upstream_tag}^{{commit}}")
-    git_ref = json.loads(run("gh", "api", f"repos/{UPSTREAM}/git/ref/tags/{upstream_tag}"))["object"]
-    while git_ref["type"] == "tag":
-        git_ref = json.loads(run("gh", "api", f"repos/{UPSTREAM}/git/tags/{git_ref['sha']}"))["object"]
-    if git_ref["type"] != "commit" or git_ref["sha"] != upstream_commit:
+    if official_tag_commit(upstream_tag) != upstream_commit:
         raise ValueError(f"GitHub and Git disagree on the commit for {upstream_tag}")
     config = run("git", "show", f"{upstream_commit}:{PROJECT_CONFIG}")
     match = re.search(r'^\s*const val VERSION_NAME = "([^"]+)"', config, re.MULTILINE)
@@ -97,6 +104,8 @@ def release_candidate(upstream_release, fork_releases):
     bases = run("git", "merge-base", "--all", fork_source, "refs/remotes/upstream/main").splitlines()
     if len(bases) != 1:
         raise ValueError("Cannot identify a unique fork overlay base")
+    if subprocess.run(["git", "merge-base", "--is-ancestor", FORK_POINT, bases[0]]).returncode:
+        raise ValueError("Fork overlay base predates the original fork point. Confirm upstream history.")
     overlay = subprocess.check_output(["git", "diff", "--binary", "--full-index", bases[0], fork_source])
     if not overlay:
         raise ValueError("Fork overlay is empty")
@@ -141,7 +150,7 @@ def release_candidate(upstream_release, fork_releases):
     floor = version_floor(fork_releases, upstream_release)
     require_higher(code, floor)
     print(f"versionCode {code} exceeds distribution floor {floor}.")
-    return fork_tag, candidate, code, existing
+    return fork_tag, candidate, upstream_commit, code, existing
 
 
 def require_higher(code, floor):
@@ -160,6 +169,8 @@ def main():
         upstream_release = json.loads(run("gh", "api", f"repos/{UPSTREAM}/releases/tags/{match[1]}"))
         if upstream_release["draft"] or upstream_release["prerelease"]:
             raise ValueError(f"Upstream release {match[1]} is no longer formal")
+        if official_tag_commit(match[1]) != os.environ["UPSTREAM_COMMIT"]:
+            raise ValueError(f"Upstream tag {match[1]} moved after planning")
         require_higher(int(os.environ["RELEASE_VERSION_CODE"]), version_floor(fork_releases, upstream_release))
         print("Publication preflight passed.")
         return
@@ -190,7 +201,7 @@ def main():
     probe = pending[0] if pending else start_tag
     if not pending:
         print(f"Dry-run probe uses {probe} even though automatic publication skips it.")
-    tag, candidate, code, existing = release_candidate(next(release for release in official if release["tag_name"] == probe), fork_releases)
+    tag, candidate, upstream_commit, code, existing = release_candidate(next(release for release in official if release["tag_name"] == probe), fork_releases)
     if check_only:
         for floor in (code, code + 1):
             try:
@@ -207,7 +218,8 @@ def main():
     if not existing:
         run("git", "push", "origin", f"{candidate}:refs/tags/{tag}")
     with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
-        stream.write(f"release_tag={tag}\nrelease_commit={candidate}\nversion_code={code}\n")
+        stream.write(f"release_tag={tag}\nrelease_commit={candidate}\n")
+        stream.write(f"upstream_commit={upstream_commit}\nversion_code={code}\n")
 
 
 if __name__ == "__main__":

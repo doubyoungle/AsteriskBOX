@@ -32,13 +32,21 @@ fi
 gh release upload "$tag" release-artifacts/*.apk release-artifacts/update-manifest.json --clobber
 gh release view "$tag" --json isDraft,assets > "$RUNNER_TEMP/fork-draft.json"
 python3 - "$RUNNER_TEMP/fork-draft.json" <<'PY'
+import hashlib
 import json
 import sys
 from pathlib import Path
 
 draft = json.loads(Path(sys.argv[1]).read_text())
-expected = {path.name: path.stat().st_size for path in Path("release-artifacts").iterdir()}
-uploaded = {asset["name"]: asset["size"] for asset in draft["assets"] if asset["state"] == "uploaded"}
+expected = {}
+for path in Path("release-artifacts").iterdir():
+    with path.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    expected[path.name] = (path.stat().st_size, f"sha256:{digest}")
+uploaded = {
+    asset["name"]: (asset["size"], asset["digest"])
+    for asset in draft["assets"] if asset["state"] == "uploaded"
+}
 if not draft["isDraft"] or len(draft["assets"]) != len(expected) or uploaded != expected:
     sys.exit("::error::The draft does not contain exactly the five verified APKs and the manifest.")
 PY

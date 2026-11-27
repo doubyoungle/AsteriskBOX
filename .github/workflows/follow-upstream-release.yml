@@ -46,6 +46,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.prepare.outputs.release_tag }}
       release_commit: ${{ steps.prepare.outputs.release_commit }}
+      upstream_commit: ${{ steps.prepare.outputs.upstream_commit }}
       version_code: ${{ steps.prepare.outputs.version_code }}
     steps:
       - uses: actions/checkout@v7
@@ -70,5 +71,6 @@ jobs:
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
       release_commit: ${{ needs.prepare.outputs.release_commit }}
+      upstream_commit: ${{ needs.prepare.outputs.upstream_commit }}
       version_code: ${{ needs.prepare.outputs.version_code }}
     secrets: inherit
