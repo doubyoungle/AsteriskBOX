@@ -27,7 +27,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Check baseline, skipped releases and versionCode
+      - name: Check upstream Latest and versionCode
         env:
           GH_TOKEN: ${{ github.token }}
           CHECK_ONLY: 'true'
